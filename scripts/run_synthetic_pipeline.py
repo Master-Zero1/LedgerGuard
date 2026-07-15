@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE_PATH = ROOT / ".tmp" / "fixtures" / "synthetic_document_set.json"
+FIXTURE_PATH = ROOT / "test_fixtures" / "synthetic_document_set.json"
 sys.path.insert(0, str(ROOT))
 
 from backend.pipeline_runner import run_document_set  # noqa: E402
