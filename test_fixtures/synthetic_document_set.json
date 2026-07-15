@@ -1,0 +1,132 @@
+{
+  "user_id": "synthetic-user",
+  "vendor": {
+    "id": "vendor-northstar",
+    "name": "Northstar Cloud Services",
+    "aliases": ["Northstar", "NCS"]
+  },
+  "contract": {
+    "id": "contract-northstar-2026",
+    "vendor_id": "vendor-northstar",
+    "effective_date": "2026-01-01",
+    "expiry_date": "2026-12-31",
+    "source_file_id": "contract-northstar-2026.pdf",
+    "clauses": [
+      {
+        "id": "clause-storage",
+        "item_description": "Managed storage subscription",
+        "agreed_unit_price": "100.00",
+        "unit": "month",
+        "terms_text": "Managed storage is billed at $100.00 per month.",
+        "page_ref": "3"
+      },
+      {
+        "id": "clause-support",
+        "item_description": "Priority support",
+        "agreed_unit_price": "50.00",
+        "unit": "hour",
+        "terms_text": "Priority support is billed at $50.00 per hour.",
+        "page_ref": "4"
+      },
+      {
+        "id": "clause-transactions",
+        "item_description": "API transactions",
+        "agreed_unit_price": "0.10",
+        "unit": "transaction",
+        "terms_text": "API transactions are billed at $0.10 each.",
+        "page_ref": "5"
+      }
+    ]
+  },
+  "invoice": {
+    "id": "invoice-northstar-1007",
+    "vendor_id": "vendor-northstar",
+    "invoice_number": "NS-1007",
+    "date": "2026-03-01",
+    "source_file_id": "invoice-northstar-1007.pdf",
+    "line_items": [
+      {
+        "id": "line-storage-march",
+        "description": "Managed storage subscription",
+        "quantity": "1",
+        "unit_price": "120.00",
+        "total": "120.00",
+        "page_ref": "1"
+      },
+      {
+        "id": "line-support-1",
+        "description": "Priority support",
+        "quantity": "5",
+        "unit_price": "50.00",
+        "total": "250.00",
+        "page_ref": "1"
+      },
+      {
+        "id": "line-transactions",
+        "description": "API transactions",
+        "quantity": "100",
+        "unit_price": "0.10",
+        "total": "10.00",
+        "page_ref": "1"
+      },
+      {
+        "id": "line-support-duplicate",
+        "description": "Priority support",
+        "quantity": "5",
+        "unit_price": "50.00",
+        "total": "250.00",
+        "page_ref": "1"
+      },
+      {
+        "id": "line-account-credit",
+        "description": "Account credit",
+        "quantity": "1",
+        "unit_price": "-25.00",
+        "total": "-25.00",
+        "page_ref": "1"
+      }
+    ]
+  },
+  "expected_discrepancies": [
+    {
+      "candidate_id": "rate-violation-storage",
+      "type": "rate_violation",
+      "line_item_id": "line-storage-march",
+      "clause_id": "clause-storage",
+      "dollar_impact": "20.00",
+      "confidence_score": 0.98,
+      "evidence": [
+        {
+          "record_id": "line-storage-march",
+          "page_ref": "1",
+          "excerpt": "Billed unit price: $120.00."
+        },
+        {
+          "record_id": "clause-storage",
+          "page_ref": "3",
+          "excerpt": "Agreed unit price: $100.00 per month."
+        }
+      ]
+    },
+    {
+      "candidate_id": "duplicate-support",
+      "type": "duplicate",
+      "line_item_id": "line-support-duplicate",
+      "clause_id": null,
+      "dollar_impact": "250.00",
+      "confidence_score": 0.99,
+      "evidence": [
+        {
+          "record_id": "line-support-1",
+          "page_ref": "1",
+          "excerpt": "Priority support: 5 hours at $50.00, total $250.00."
+        },
+        {
+          "record_id": "line-support-duplicate",
+          "page_ref": "1",
+          "excerpt": "Priority support: 5 hours at $50.00, total $250.00."
+        }
+      ]
+    }
+  ]
+}
