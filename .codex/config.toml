@@ -1,0 +1,16 @@
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest", "--headless"]
+
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+
+[mcp_servers.figma]
+command = "npx"
+args = ["-y", "figma-developer-mcp", "--stdio"]
+env = { FIGMA_API_KEY = "env:FIGMA_API_KEY" }
+
+[mcp_servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
