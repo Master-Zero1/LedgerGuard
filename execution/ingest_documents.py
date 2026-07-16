@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import contextlib
 import hashlib
+import io
 import json
 import multiprocessing as multiprocessing
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import uuid
 import warnings
 from pathlib import Path
@@ -20,6 +25,9 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / ".tmp" / "raw-extractions"
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_PAGES = 250
 DEFAULT_TIMEOUT_SECONDS = 30
+OCR_RENDER_DPI = 200
+OCR_CONFIDENCE_REVIEW_THRESHOLD = 0.80
+OCR_PAGE_TIMEOUT_SECONDS = 20
 
 
 def _safe_error(code: str) -> dict[str, str]:
@@ -39,6 +47,170 @@ def _write_artifact(path: Path, payload: dict[str, Any]) -> None:
     temporary_path = path.with_suffix(".partial")
     temporary_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     temporary_path.replace(path)
+
+
+def _ocr_lines(tsv_text: str) -> list[dict[str, Any]]:
+    """Group Tesseract TSV tokens into visual lines without interpreting document content."""
+    words: list[dict[str, Any]] = []
+    for row in csv.DictReader(io.StringIO(tsv_text), delimiter="\t"):
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            words.append(
+                {
+                    "text": text,
+                    "left": int(row.get("left") or 0),
+                    "top": int(row.get("top") or 0),
+                    "width": int(row.get("width") or 0),
+                    "height": int(row.get("height") or 0),
+                }
+            )
+        except ValueError:
+            continue
+
+    lines: list[dict[str, Any]] = []
+    for word in sorted(words, key=lambda item: (item["top"], item["left"])):
+        line = next(
+            (
+                candidate
+                for candidate in reversed(lines)
+                if abs(candidate["top"] - word["top"])
+                <= max(8, min(candidate["height"], word["height"]) // 2)
+            ),
+            None,
+        )
+        if line is None:
+            line = {"top": word["top"], "height": word["height"], "words": []}
+            lines.append(line)
+        line["words"].append(word)
+        line["top"] = min(line["top"], word["top"])
+        line["height"] = max(line["height"], word["height"])
+
+    normalized: list[dict[str, Any]] = []
+    for line in sorted(lines, key=lambda item: item["top"]):
+        line_words = sorted(line["words"], key=lambda item: item["left"])
+        normalized.append({"top": line["top"], "words": line_words})
+    return normalized
+
+
+def _reconstruct_ocr_tables(lines: list[dict[str, Any]], page_ref: str) -> list[dict[str, Any]]:
+    """Recover a basic invoice-like table only when its column headers are visible."""
+    expected_headers = ("description", "service", "quantity", "unit", "line")
+    header_index: int | None = None
+    header_positions: list[int] = []
+    for index, line in enumerate(lines):
+        words = line["words"]
+        lowered = " ".join(word["text"] for word in words).lower()
+        if all(header in lowered for header in expected_headers):
+            positions: list[int] = []
+            for header in expected_headers:
+                match = next((word for word in words if word["text"].lower().startswith(header)), None)
+                if match is None:
+                    positions = []
+                    break
+                positions.append(match["left"])
+            if len(positions) == len(expected_headers):
+                header_index = index
+                header_positions = positions
+                break
+    if header_index is None:
+        return []
+
+    # OCR text is often right-aligned within numeric columns. The next header's
+    # left edge is therefore a safer boundary than the midpoint between headers.
+    boundaries = header_positions[1:]
+    rows: list[list[str | None]] = [["Description", "Service period", "Quantity", "Unit price", "Line total"]]
+    for line in lines[header_index + 1 :]:
+        words = line["words"]
+        line_text = " ".join(word["text"] for word in words).lower()
+        if "payment terms" in line_text:
+            break
+        if line_text.startswith("invoice total"):
+            amount_index = next(
+                (index for index, word in enumerate(words) if "$" in word["text"]),
+                len(words),
+            )
+            label = " ".join(word["text"] for word in words[:amount_index]).strip()
+            amount = " ".join(word["text"] for word in words[amount_index:]).strip()
+            rows.append([None, None, None, label or None, amount or None])
+            continue
+        cells = [[] for _ in expected_headers]
+        for word in words:
+            column = next(
+                (index for index, boundary in enumerate(boundaries) if word["left"] < boundary),
+                len(expected_headers) - 1,
+            )
+            cells[column].append(word["text"])
+        values = [" ".join(cell).strip() or None for cell in cells]
+        if any(values):
+            rows.append(values)
+    if len(rows) == 1:
+        return []
+    return [{"table_index": 1, "page_ref": page_ref, "rows": rows}]
+
+
+def _ocr_page(
+    source_path: str, page_number: int, page_ref: str
+) -> tuple[str, list[dict[str, Any]], float | None, str]:
+    """Render a page in-process and invoke Tesseract with fixed, non-shell arguments."""
+    tesseract = shutil.which("tesseract")
+    if tesseract is None:
+        raise RuntimeError("ocr_dependency_missing")
+    try:
+        import pypdfium2
+    except ModuleNotFoundError as error:
+        raise RuntimeError("ocr_dependency_missing") from error
+
+    with tempfile.TemporaryDirectory(prefix="ledgerguard-ocr-") as temporary_directory:
+        image_path = Path(temporary_directory) / "page.png"
+        document = pypdfium2.PdfDocument(source_path)
+        rendered = document[page_number - 1].render(scale=OCR_RENDER_DPI / 72)
+        rendered.to_pil().save(image_path, format="PNG")
+        command = [tesseract, str(image_path), "stdout", "--psm", "6", "-l", "eng"]
+        text_result = subprocess.run(
+            command,
+            cwd=temporary_directory,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            text=True,
+            timeout=OCR_PAGE_TIMEOUT_SECONDS,
+        )
+        tsv_result = subprocess.run(
+            [*command, "-c", "tessedit_create_tsv=1"],
+            cwd=temporary_directory,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            text=True,
+            timeout=OCR_PAGE_TIMEOUT_SECONDS,
+        )
+    if text_result.returncode != 0 or tsv_result.returncode != 0:
+        raise RuntimeError("ocr_failed")
+
+    confidence_values: list[float] = []
+    for row in csv.DictReader(io.StringIO(tsv_result.stdout), delimiter="\t"):
+        if not (row.get("text") or "").strip():
+            continue
+        try:
+            confidence = float(row.get("conf") or -1)
+        except ValueError:
+            continue
+        if confidence >= 0:
+            confidence_values.append(confidence / 100)
+    confidence_score = (
+        round(sum(confidence_values) / len(confidence_values), 4)
+        if confidence_values
+        else None
+    )
+    lines = _ocr_lines(tsv_result.stdout)
+    renderer_version = str(
+        getattr(getattr(pypdfium2, "version", None), "PYPDFIUM_INFO", "unknown")
+    )
+    return text_result.stdout.strip(), _reconstruct_ocr_tables(lines, page_ref), confidence_score, renderer_version
 
 
 def _extract_in_worker(
@@ -75,6 +247,9 @@ def _extract_in_worker(
             all_tables: list[dict[str, Any]] = []
             extraction_warnings: list[str] = []
             any_extractable_content = False
+            ocr_used = False
+            ocr_confidence_scores: list[float] = []
+            ocr_renderer_version: str | None = None
 
             with pdfplumber.open(source_path, unicode_norm="NFKC") as document:
                 if len(document.pages) != declared_page_count:
@@ -112,21 +287,58 @@ def _extract_in_worker(
                         tables.append(table)
                         all_tables.append(table)
 
+                    ocr: dict[str, Any] | None = None
+                    if not text and not tables:
+                        ocr_used = True
+                        try:
+                            ocr_text, ocr_tables, confidence_score, ocr_renderer_version = _ocr_page(
+                                source_path, page_number, str(page_number)
+                            )
+                        except RuntimeError as error:
+                            page_warnings.append(str(error))
+                        except (OSError, subprocess.TimeoutExpired):
+                            page_warnings.append("ocr_failed")
+                        else:
+                            text = ocr_text
+                            for table in ocr_tables:
+                                table["table_index"] = len(tables) + 1
+                                tables.append(table)
+                                all_tables.append(table)
+                            ocr = {
+                                "engine": "tesseract",
+                                "confidence_score": confidence_score,
+                                "render_dpi": OCR_RENDER_DPI,
+                            }
+                            page_warnings.append("ocr_used")
+                            if confidence_score is None:
+                                page_warnings.append("ocr_confidence_unavailable")
+                            else:
+                                ocr_confidence_scores.append(confidence_score)
+                                if confidence_score < OCR_CONFIDENCE_REVIEW_THRESHOLD:
+                                    page_warnings.append("low_ocr_confidence_manual_review")
+
                     if text or tables:
                         any_extractable_content = True
                     else:
                         page_warnings.append("no_extractable_content")
-                    pages.append(
-                        {
-                            "page_ref": str(page_number),
-                            "text": text,
-                            "tables": tables,
-                            "warnings": page_warnings,
-                        }
-                    )
+                    page_payload = {
+                        "page_ref": str(page_number),
+                        "text": text,
+                        "tables": tables,
+                        "warnings": page_warnings,
+                    }
+                    if ocr is not None:
+                        page_payload["ocr"] = ocr
+                    pages.append(page_payload)
 
-            if not any_extractable_content:
+            if ocr_used:
                 extraction_warnings.append("ocr_required")
+                status = "partial"
+                if any(
+                    "low_ocr_confidence_manual_review" in page["warnings"] for page in pages
+                ):
+                    extraction_warnings.append("low_ocr_confidence_manual_review")
+            elif not any_extractable_content:
                 status = "partial"
             elif any(page["warnings"] for page in pages):
                 status = "partial"
@@ -140,6 +352,17 @@ def _extract_in_worker(
                     "parser": "pdfplumber",
                     "parser_version": pdfplumber.__version__,
                     "page_count": len(pages),
+                    "ocr": {
+                        "engine": "tesseract" if ocr_used else None,
+                        "renderer": "pypdfium2" if ocr_used else None,
+                        "renderer_version": ocr_renderer_version,
+                        "confidence_score": (
+                            round(sum(ocr_confidence_scores) / len(ocr_confidence_scores), 4)
+                            if ocr_confidence_scores
+                            else None
+                        ),
+                        "manual_review_threshold": OCR_CONFIDENCE_REVIEW_THRESHOLD,
+                    },
                 },
                 "raw_text": "\n\f\n".join(page["text"] for page in pages),
                 "pages": pages,
