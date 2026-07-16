@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import tempfile
 from decimal import Decimal
 from pathlib import Path
+
+from pypdf import PdfReader, PdfWriter
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -387,6 +390,52 @@ def generate_statement(output_dir: Path) -> None:
     build_document(output_dir / "duplicate_charge_statement_march_2026.pdf", "Account Statement", elements)
 
 
+def generate_duplicate_group_statements(output_dir: Path) -> None:
+    """Create two separate statement charges matching a billed support line."""
+    for statement_number, filename in (
+        ("STMT-2026-DUP-GROUP-1", "duplicate_group_statement_a_march_2026.pdf"),
+        ("STMT-2026-DUP-GROUP-2", "duplicate_group_statement_b_march_2026.pdf"),
+    ):
+        rows = [
+            ["Date", "Reference", "Description", "Debit", "Credit", "Balance"],
+            ["Mar 12, 2026", statement_number, "Priority support", "$100.00", "$0.00", "$100.00"],
+        ]
+        elements = [
+            metadata_table(
+                [
+                    ("Statement number", statement_number),
+                    ("Statement date", "March 31, 2026"),
+                    ("Vendor", VENDOR_NAME),
+                    ("Account", "HVA-8891"),
+                    ("Agreement ID", "NCS-HVA-2026"),
+                ]
+            ),
+            Spacer(1, 14),
+            Paragraph("Account activity", getSampleStyleSheet()["Heading2"]),
+            styled_table(rows, [1.1 * inch, 1.65 * inch, 2.5 * inch, 0.8 * inch, 0.8 * inch, 0.85 * inch]),
+        ]
+        build_document(output_dir / filename, "Account Statement", elements)
+
+
+def generate_invalid_pdf_fixtures(output_dir: Path) -> None:
+    """Create one malformed and one encrypted PDF for boundary testing."""
+    (output_dir / "corrupted_pdf_fixture.pdf").write_bytes(
+        b"%PDF-1.7\n% LedgerGuard intentionally malformed test fixture\ntruncated"
+    )
+    with tempfile.TemporaryDirectory(prefix="ledgerguard-encryption-fixture-") as temporary_directory:
+        source = Path(temporary_directory) / "source.pdf"
+        build_document(
+            source,
+            "Encrypted Invoice Fixture",
+            [Paragraph("This PDF is intentionally password protected for API validation.", getSampleStyleSheet()["BodyText"])],
+        )
+        writer = PdfWriter()
+        writer.append(PdfReader(str(source)))
+        writer.encrypt("ledgerguard-test")
+        with (output_dir / "password_protected_pdf_fixture.pdf").open("wb") as protected_file:
+            writer.write(protected_file)
+
+
 def generate_documents(output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     generate_contract(output_dir)
@@ -400,6 +449,20 @@ def generate_documents(output_dir: Path) -> list[Path]:
             ("Managed storage subscription", Decimal("1"), Decimal("100.00")),
             ("Priority support", Decimal("4"), Decimal("50.00")),
             ("API transactions", Decimal("1000"), Decimal("0.10")),
+        ],
+        agreement_reference="NCS-HVA-2026",
+    )
+    generate_invoice(
+        output_dir,
+        "tax_and_partial_payment_invoice_march_2026.pdf",
+        "INV-2026-TAX-PARTIAL-01",
+        "March 18, 2026",
+        "March 2026",
+        [
+            ("Managed storage subscription", Decimal("1"), Decimal("100.00")),
+            ("Priority support", Decimal("2"), Decimal("50.00")),
+            ("Sales tax", Decimal("1"), Decimal("20.00")),
+            ("Partial payment received", Decimal("1"), Decimal("-100.00")),
         ],
         agreement_reference="NCS-HVA-2026",
     )
@@ -442,8 +505,10 @@ def generate_documents(output_dir: Path) -> list[Path]:
         agreement_reference="NCS-HVA-2026",
     )
     generate_statement(output_dir)
+    generate_duplicate_group_statements(output_dir)
     generate_contract_drift_documents(output_dir)
     generate_authorized_contract_drift_documents(output_dir)
+    generate_invalid_pdf_fixtures(output_dir)
     return sorted(output_dir.glob("*.pdf"))
 
 
