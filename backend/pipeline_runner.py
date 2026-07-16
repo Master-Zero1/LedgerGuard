@@ -21,6 +21,7 @@ from backend.agents._orchestration import PROJECT_ROOT, call_execution
 Executor = Callable[[str, list[str]], dict[str, Any]]
 Investigator = Callable[..., dict[str, Any]]
 DocumentInput = Mapping[str, str | None]
+StatusUpdate = Callable[[str, bool], None]
 
 _INVESTIGATORS: dict[str, Investigator] = {
     "pricing": pricing_agent.investigate,
@@ -46,7 +47,10 @@ def _write_verdict_artifact(verdicts: list[dict[str, Any]]) -> Path:
 
 
 def _investigate(
-    queue_item: Mapping[str, Any], user_id: str, executor: Executor
+    queue_item: Mapping[str, Any],
+    user_id: str,
+    executor: Executor,
+    status_update: StatusUpdate | None = None,
 ) -> dict[str, Any]:
     """Delegate one routed item to its independently callable investigation agent."""
     investigation_type = queue_item["suggested_investigation_type"]
@@ -56,13 +60,16 @@ def _investigate(
         if investigation_type in {"pricing", "duplicate", "contract_drift"}
         else executor
     )
-    return {
+    result = {
         "candidate_id": queue_item["candidate_id"],
         "investigation_type": investigation_type,
         "verdict": investigator(
             queue_item["candidate_id"], user_id, executor=investigation_executor
         ),
     }
+    if status_update is not None:
+        status_update("investigating", True)
+    return result
 
 
 def _document_set(
@@ -96,9 +103,12 @@ def run_document_set(
     user_id: str,
     rule_config: str | None = None,
     executor: Executor = call_execution,
+    status_update: StatusUpdate | None = None,
 ) -> dict[str, Any]:
-    """Run real deterministic stages, then use the injected executor for Layer 2 agents."""
+    """Run the pipeline and optionally report stage transitions to an injected observer."""
     document_set = _document_set(documents, document_id, source_path, document_type)
+    if status_update is not None:
+        status_update("ingesting", False)
     ingestions = [
         call_execution(
             "ingest_documents.py",
@@ -113,6 +123,9 @@ def run_document_set(
         )
         for document in document_set
     ]
+    if status_update is not None:
+        status_update("ingesting", True)
+        status_update("normalizing", False)
     normalization_arguments = [
         argument
         for ingestion in ingestions
@@ -120,13 +133,22 @@ def run_document_set(
     ]
     normalization_arguments.extend(("--user-id", user_id))
     normalization = call_execution("normalize_data.py", normalization_arguments)
+    if status_update is not None:
+        status_update("normalizing", True)
+        status_update("rules_engine", False)
     rules_arguments = ["--normalized-records", normalization["normalized_records"]]
     if rule_config is not None:
         rules_arguments.extend(("--rule-config", rule_config))
     rules = call_execution("rules_engine.py", rules_arguments)
+    if status_update is not None:
+        status_update("rules_engine", True)
+        status_update("triage", False)
     triage = triage_agent.triage(
         rules["rule_run_id"], user_id, executor=call_execution
     )
+    if status_update is not None:
+        status_update("triage", True)
+        status_update("investigating", False)
     routed_items = [
         item
         for item in triage["triage_queue"]
@@ -135,9 +157,14 @@ def run_document_set(
 
     with ThreadPoolExecutor(max_workers=max(1, len(routed_items))) as pool:
         futures = [
-            pool.submit(_investigate, item, user_id, executor) for item in routed_items
+            pool.submit(_investigate, item, user_id, executor, status_update)
+            for item in routed_items
         ]
         investigations = [future.result() for future in futures]
+
+    if status_update is not None:
+        status_update("investigating", True)
+        status_update("synthesizing", False)
 
     verdict_artifact = _write_verdict_artifact(investigations)
     try:
@@ -146,6 +173,8 @@ def run_document_set(
         )
     finally:
         verdict_artifact.unlink(missing_ok=True)
+    if status_update is not None:
+        status_update("synthesizing", True)
 
     return {
         "ingestion": ingestions,
