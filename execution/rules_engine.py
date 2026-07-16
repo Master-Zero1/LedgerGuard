@@ -289,37 +289,42 @@ def _duplicate_discrepancies(records: dict[str, Any], tolerance: Decimal, warnin
     discrepancies: list[dict[str, Any]] = []
     for (_, _, transaction_date, description, total), grouped_items in groups.items():
         grouped_items.sort(key=lambda item: item["id"])
-        for earlier, later in zip(grouped_items, grouped_items[1:]):
-            earlier_invoice = invoices[earlier["invoice_id"]]
-            later_invoice = invoices[later["invoice_id"]]
-            if earlier_invoice["source_file_id"] == later_invoice["source_file_id"]:
-                continue
-            discrepancy_id = _stable_id("Discrepancy", "duplicate", earlier["id"], later["id"])
-            discrepancies.append(
-                {
-                    "id": discrepancy_id,
-                    "type": "duplicate",
-                    "line_item_id": later["id"],
-                    "clause_id": None,
-                    "dollar_impact": _money(total),
-                    "confidence_score": 1.0,
-                    "evidence": [
-                        {
-                            "record_type": "InvoiceLineItem",
-                            "record_id": earlier["id"],
-                            "page_ref": earlier["page_ref"],
-                            "excerpt": f"{earlier['description']}; date: {transaction_date}; total: {_money(total)}.",
-                        },
-                        {
-                            "record_type": "InvoiceLineItem",
-                            "record_id": later["id"],
-                            "page_ref": later["page_ref"],
-                            "excerpt": f"{later['description']}; date: {transaction_date}; total: {_money(total)}.",
-                        },
-                    ],
-                    "status": "flagged",
-                }
-            )
+        # A duplicate group has one representative per source file. This prevents
+        # re-ingested rows in the same file from multiplying the impact, while
+        # retaining every cross-document charge as cited evidence.
+        representatives: dict[str, dict[str, Any]] = {}
+        for item in grouped_items:
+            invoice = invoices.get(item.get("invoice_id"))
+            if invoice and isinstance(invoice.get("source_file_id"), str):
+                representatives.setdefault(invoice["source_file_id"], item)
+        grouped_charges = sorted(representatives.values(), key=lambda item: item["id"])
+        if len(grouped_charges) < 2:
+            continue
+        duplicate_count = len(grouped_charges) - 1
+        impact = total * duplicate_count
+        discrepancy_id = _stable_id(
+            "Discrepancy", "duplicate_group", *(item["id"] for item in grouped_charges)
+        )
+        discrepancies.append(
+            {
+                "id": discrepancy_id,
+                "type": "duplicate",
+                "line_item_id": grouped_charges[-1]["id"],
+                "clause_id": None,
+                "dollar_impact": _money(impact),
+                "confidence_score": 1.0,
+                "evidence": [
+                    {
+                        "record_type": "InvoiceLineItem",
+                        "record_id": item["id"],
+                        "page_ref": item["page_ref"],
+                        "excerpt": f"{item['description']}; date: {transaction_date}; total: {_money(total)}.",
+                    }
+                    for item in grouped_charges
+                ],
+                "status": "flagged",
+            }
+        )
     return discrepancies
 
 
