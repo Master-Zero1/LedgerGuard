@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 credentials.json
 token.json
+frontend/.next/
+frontend/tsconfig.tsbuildinfo
+output/
