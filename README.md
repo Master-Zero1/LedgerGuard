@@ -31,6 +31,12 @@ Ingest -> Normalize -> Rules Engine -> Triage -> Investigation (parallel) -> Syn
 
 No agent computes dollar amounts. Discrepancy financial-impact calculations are deterministic `Decimal` arithmetic in `execution/rules_engine.py`; investigation agents use the stored rules-engine impact as provenance.
 
+## How this was built with Codex
+
+- The pipeline was implemented stage by stage and verified before advancing: generated PDFs were first ingested into raw-extraction artifacts, then normalized into schema records and clause-match candidates, then evaluated by the rules engine, agents, synthesis, dispute drafting, API, frontend, and PDF export.
+- An edge-case test with three matching $100.00 charges exposed overlapping duplicate-pair handling that would have produced $300.00 of impact. The rules engine was changed to group one representative charge per source document, producing one $200.00 impact for the two excess charges.
+- Negative contract-drift tests exposed missing amendment handling in `normalize_data.py`: an authorized $100.00 to $130.00 rate change needed the original agreement and dated, signed amendment as normalized supporting records. The authorized fixture now dismisses that $30.00 price-hike candidate; the otherwise identical fixture without supporting amendment evidence confirms it.
+
 ## What's actually verified
 
 The following results were produced from the project fixtures and live API runs.
