@@ -150,3 +150,12 @@ ledgerguard/
 - `corrupted_pdf_fixture.pdf` — malformed-PDF rejection path.
 - `password_protected_pdf_fixture.pdf` — encrypted-PDF rejection path.
 - `synthetic_document_set.json` — structured input for the fixture-backed synthetic pipeline script.
+
+---
+
+<div align="center">
+
+**Built by [master-zero1](https://github.com/master-zero1) using Codex (GPT-5.6)**  
+**YT-URl - (https://youtu.be/XlCnSVBCQj4)**
+**Vibe Coded Project for OpenAI Build Week**
+</div>
