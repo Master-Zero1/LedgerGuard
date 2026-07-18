@@ -155,7 +155,7 @@ ledgerguard/
 
 <div align="center">
 
-**Built by [master-zero1](https://github.com/master-zero1) using Codex (GPT-5.6)**  
+**Built by [master-zero1](https://github.com/master-zero1)**  
 **YT-URl - (https://youtu.be/XlCnSVBCQj4)**
-**Vibe Coded Project for OpenAI Build Week**
+**Built for OpenAI Build Week with Codex and GPT-5.6**
 </div>
