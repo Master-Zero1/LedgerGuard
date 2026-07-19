@@ -156,6 +156,6 @@ ledgerguard/
 <div align="center">
 
 **Built by [master-zero1](https://github.com/master-zero1)**  
-**YT-URl - (https://youtu.be/XlCnSVBCQj4)**
+**YT-URL - (https://youtu.be/XlCnSVBCQj4)**  
 **Built for OpenAI Build Week with Codex and GPT-5.6**
 </div>
